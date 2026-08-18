@@ -58,6 +58,7 @@ Repository = "https://github.com/muscbridge/pyDKE"
 Documentation = "https://pydke.readthedocs.io/en/latest/"
 
 [project.scripts]
+rectify-odf = "pydesigner.tractography.rectify_odf:main"
 pydke = "pydesigner.main:main"
 pydesigner = "pydesigner.main:main"
 
