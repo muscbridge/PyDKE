@@ -156,7 +156,15 @@ def main():
         "--denoise",
         action="store_true",
         default=False,
-        help="Run thermal denoising with dwidenoise.",
+        help="Run thermal denoising using --denoise-method.",
+    )
+    preprocessing_control.add_argument(
+        "--denoise-method", choices=("mppca", "adaptive"), default="mppca",
+        help="MP-PCA backend: original MRtrix (default) or DESIGNER adaptive patches with shrinkage.",
+    )
+    preprocessing_control.add_argument(
+        "--denoise-patch-size", type=int, default=None,
+        help="Adaptive patch voxel count; default is 80%% of the search window.",
     )
     preprocessing_control.add_argument(
         "--extent",
@@ -479,6 +487,11 @@ def main():
             warningmsg += override + "tensor fitting.\n"
             args.nofit = False
 
+    if args.denoise_method == "adaptive":
+        args.denoise = True
+    elif args.denoise_patch_size is not None:
+        parser.error("--denoise-patch-size requires --denoise-method adaptive")
+
     # (Extent or Degibbs) and no Denoise
     if not args.denoise:
         stdmsg = "No --denoise but "
@@ -676,12 +689,20 @@ def main():
         noisemap_name = "noisemap.nii"
         nii_noisemap = op.join(outpath, noisemap_name)
         # check to see if this already exists
+        denoise_config = {"method": args.denoise_method, "extent": args.extent,
+                          "patch_size": args.denoise_patch_size}
+        denoise_record = op.join(outpath, "denoising.json")
+        if args.resume:
+            from .preprocessing.denoise_config import check_resume
+            check_resume(denoise_record, denoise_config)
         if not (args.resume and op.exists(nii_denoised) and op.exists(nii_noisemap)):
             # run denoise function
             mrpreproc.denoise(
                 input=working_path,
                 output=mif_denoised,
                 noisemap=True,
+                method=args.denoise_method,
+                patch_size=args.denoise_patch_size,
                 extent=args.extent,
                 nthreads=args.nthreads,
                 force=args.force,
@@ -695,8 +716,9 @@ def main():
                 verbose=False,
             )
             # remove old working.mif and replace with new corrected .mif
-            os.remove(working_path)
-            os.rename(mif_denoised, working_path)
+            os.replace(mif_denoised, working_path)
+            with open(denoise_record, "w") as f:
+                json.dump(denoise_config, f, indent=2)
             # update command history
             cmdtable["denoise"] = mrinfoutil.commandhistory(working_path)[-1]
             cmdtable["HEAD"] = cmdtable["denoise"]

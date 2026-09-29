@@ -203,9 +203,10 @@ def denoise(
     nthreads: int = None,
     force: bool = True,
     verbose: bool = False,
+    method: str = "mppca",
+    patch_size: int = None,
 ) -> None:
-    """Runs MRtrix3's `dwidenoise` command with optimal parameters for
-    PyDesigner.
+    """Run original MRtrix MP-PCA or DESIGNER-v2 adaptive MP-PCA.
 
     Parameters
     ----------
@@ -228,10 +229,23 @@ def denoise(
     verbose : bool, optional
         Specify whether to print console output (Default: False)
 
+    method : str, optional
+        "mppca" (default) or "adaptive" (DESIGNER patches and shrinkage).
+    patch_size : int, optional
+        Adaptive voxel count; default floor(0.8 * product(extent)).
+        Must exceed volume count and be smaller than the search window.
+
     Returns
     -------
     None; writes out file
     """
+    if method not in ("mppca", "adaptive"):
+        raise ValueError("Denoising method must be mppca or adaptive")
+    if method == "adaptive":
+        from .adaptive import denoise_mif
+        return denoise_mif(input, output, noisemap, extent, nthreads, force, verbose, patch_size)
+    if patch_size is not None:
+        raise ValueError("patch_size requires adaptive denoising")
     opts = modelmrtrix(
         input=input_path_validator(input, ".mif"),
         output=output_path_validator(output, ".mif"),

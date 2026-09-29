@@ -32,3 +32,5 @@ six==1.17.0 ; python_version >= "3.12" and python_version < "4.0"
 tqdm==4.67.1 ; python_version >= "3.12" and python_version < "4.0"
 trx-python==0.3 ; python_version >= "3.12" and python_version < "4.0"
 typing-extensions==4.12.2 ; python_version >= "3.12" and python_version < "4.0"
+
+threadpoolctl>=3.1,<4.0

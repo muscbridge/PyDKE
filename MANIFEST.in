@@ -1,3 +1,4 @@
 include designer/fitting/*.csv
 include designer/tractography/*.mat
 global-exclude *.py[cod] __pycache__ *.so
+include pydesigner/preprocessing/DESIGNER_NOTICE.md
