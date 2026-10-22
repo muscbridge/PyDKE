@@ -798,6 +798,10 @@ class DWI(object):
         exposing solver status, unconstrained fallback, signal flooring and
         constraint residuals. The default array return remains unchanged.
         Constraint margins use raw fitted coefficients before MD normalization.
+        Constrained objectives are normalized by a common positive weight scale.
+        A solver success status alone is insufficient: sampled inequality margins
+        are checked. Invalid constrained results raise unless diagnostics were
+        explicitly requested, in which case valid_constrained_solution is False.
         """
 
         # Make inputs safe
@@ -812,6 +816,9 @@ class DWI(object):
             "signal_samples_floored": int(np.sum(~np.isfinite(dwi) | (dwi < minZero))),
             "nonfinite_solution_coefficients": 0,
             "minimum_constraint_margin": None,
+            "constraint_margin_tolerance": 1e-6,
+            "valid_constrained_solution": None,
+            "weight_normalization_factor": 1.0,
         }
 
         def result(coefficients, sanitize=False):
@@ -820,6 +827,20 @@ class DWI(object):
                 coefficients = np.nan_to_num(coefficients, nan=minZero, posinf=minZero, neginf=minZero)
             if cons is not None and len(cons) and np.isfinite(coefficients).all():
                 diagnostics["minimum_constraint_margin"] = float(np.min(cons @ coefficients))
+            if cons is not None:
+                margin = diagnostics["minimum_constraint_margin"]
+                diagnostics["valid_constrained_solution"] = bool(
+                    not diagnostics["fallback_used"]
+                    and diagnostics["solver_status"] in ("optimal", "optimal_inaccurate")
+                    and diagnostics["nonfinite_solution_coefficients"] == 0
+                    and margin is not None
+                    and margin >= -diagnostics["constraint_margin_tolerance"]
+                )
+                if not diagnostics["valid_constrained_solution"] and not return_diagnostics:
+                    raise RuntimeError(
+                        "Constrained WLLS did not produce a valid sampled-constraint solution; "
+                        "request return_diagnostics=True to inspect status, fallback and residuals"
+                    )
             return (coefficients, diagnostics) if return_diagnostics else coefficients
 
         # Avoid log(0), negative signal, NaN, Inf
@@ -828,6 +849,16 @@ class DWI(object):
 
         shat = np.nan_to_num(shat, nan=0.0, posinf=0.0, neginf=0.0)
         shat = np.clip(shat, 0.0, 1e6)
+        if cons is not None:
+            scale = float(np.max(shat))
+            diagnostics["weight_normalization_factor"] = scale
+            if scale <= 0:
+                diagnostics["solver_status"] = "invalid_weights"
+                return result(np.full(b.shape[1], np.nan), sanitize=True)
+            # A common positive factor leaves the exact WLS minimizer unchanged.
+            # It prevents absolute MRI intensity from relaxing the relative QP
+            # stopping criterion for the much smaller physical constraint rows.
+            shat = shat / scale
 
         w = np.diag(shat)
 
@@ -875,7 +906,9 @@ class DWI(object):
                     solver=cvx.OSQP,
                     warm_start=True,
                     max_iter=20000,
-                    polish=True,
+                    eps_abs=1e-9,
+                    eps_rel=1e-9,
+                    polishing=True,
                     verbose=False,
                 )
 

@@ -141,6 +141,43 @@ class ConstraintPhysicsTests(unittest.TestCase):
             np.testing.assert_allclose(fitted, scaled, atol=1e-6, rtol=0)
             self.assertGreaterEqual(info['minimum_constraint_margin'], -1e-6)
 
+    def test_high_intensity_noisy_boundary_fit_checks_actual_margin(self):
+        # Data-free regression: the unscaled/default-tolerance solve reports
+        # optimal but violates a sampled inequality by about 2.7e-6.
+        g = np.r_[np.zeros((1, 3)), np.tile(dwidirs.dirs30, (4, 1))]
+        b = np.r_[0., np.repeat([.5, 1., 1.5, 2.], 30)]
+        dc, di = self.dwi.createTensorOrder(2)
+        wc, wi = self.dwi.createTensorOrder(4)
+        B = np.c_[np.ones(121), -b[:, None] * dc * np.prod(g[:, di], axis=2),
+                  b[:, None]**2 / 6 * wc * np.prod(g[:, wi], axis=2)]
+        coeff = packed(self.dwi, np.diag([.2, .8, 1.4]), isotropic_w(.5), np.log(5000.))
+        signal = np.exp(B @ coeff + np.random.default_rng(5).normal(0, .08, 121))
+        weights = np.exp(B @ (np.linalg.pinv(B) @ np.log(signal)))
+        fitted, info = self.dwi.wlls(weights, signal, B,
+            cons=self.dwi.createConstraints([1, 1, 1]), return_diagnostics=True)
+        self.assertFalse(info['fallback_used'])
+        self.assertGreaterEqual(info['minimum_constraint_margin'], -1e-6)
+        self.assertTrue(info['valid_constrained_solution'])
+
+    def test_failed_constrained_fit_without_diagnostics_raises(self):
+        coeff = packed(self.dwi, .8 * np.eye(3), isotropic_w(.64))
+        signal = np.exp(self.design @ coeff)
+        with patch.object(cvx.Problem, 'solve', side_effect=cvx.error.SolverError('intentional')):
+            with self.assertRaisesRegex(RuntimeError, 'Constrained'):
+                self.dwi.wlls(signal, signal, self.design, cons=self.dwi.createConstraints([1, 1, 1]))
+
+    def test_optimal_status_cannot_override_bad_constraint_margin(self):
+        coeff = packed(self.dwi, .8 * np.eye(3), isotropic_w(1.92))
+        signal = np.exp(self.design @ coeff)
+        def pretend_optimal(problem, **kwargs):
+            problem._status = 'optimal'
+            problem.variables()[0].value = coeff
+        with patch.object(cvx.Problem, 'solve', pretend_optimal):
+            fitted, info = self.dwi.wlls(signal, signal, self.design,
+                cons=self.dwi.createConstraints([1, 1, 1]), return_diagnostics=True)
+        self.assertLess(info['minimum_constraint_margin'], -1e-6)
+        self.assertFalse(info['valid_constrained_solution'])
+
     def test_solver_failure_is_reported(self):
         coeff = packed(self.dwi, .8 * np.eye(3), isotropic_w(.64))
         signal = np.exp(self.design @ coeff)
@@ -148,6 +185,7 @@ class ConstraintPhysicsTests(unittest.TestCase):
             fitted, info = self.dwi.wlls(signal, signal, self.design,
                 cons=self.dwi.createConstraints([1, 1, 1]), return_diagnostics=True)
         self.assertTrue(info['fallback_used'])
+        self.assertFalse(info['valid_constrained_solution'])
         self.assertIn('SolverError', info['fallback_reason'])
         self.assertTrue(np.isfinite(fitted).all())
 
