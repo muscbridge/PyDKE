@@ -61,3 +61,25 @@ def test_mif_metadata(tmp_path):
     np.testing.assert_allclose(nib.load(result).get_fdata(),degibbs_array(data,.75,1,2),atol=1e-6)
     for flag,extra in [('-dwgrad',[]),('-property',['PhaseEncodingDirection'])]:
         assert subprocess.check_output(['mrinfo',str(mif),flag,*extra]) == subprocess.check_output(['mrinfo',str(output),flag,*extra])
+
+
+def test_preprocessing_cli_honors_nofit(tmp_path):
+    import shutil,sys,subprocess,json,os
+    import nibabel as nib
+    pytest.importorskip('pydesigner.preprocessing._rpg')
+    if not all(shutil.which(x) for x in ('dwidenoise','fsl')):
+        pytest.skip('Full CLI requires MRtrix and FSL')
+    data=np.repeat(image(),6,axis=3)+100
+    source=tmp_path/'input.nii'; output=tmp_path/'output'
+    nib.save(nib.Nifti1Image(data,np.diag([.2,.2,1.,1.])),source)
+    np.savetxt(tmp_path/'input.bval',[[0,1000,1000,1000,1000,1000]])
+    np.savetxt(tmp_path/'input.bvec',[[0,1,0,0,1,0],[0,0,1,0,0,1],[0,0,0,1,0,0]])
+    (tmp_path/'input.json').write_text(json.dumps(dict(PhaseEncodingDirection='j-',PartialFourier=.75,EchoTime=.034,TotalReadoutTime=.02)))
+    subprocess.run([sys.executable,'-m','pydesigner.main',str(source),'-o',str(output),
+                    '--denoise-method','adaptive','--extent','3,3,3','--denoise-patch-size','20',
+                    '--gibbs-method','rpg','--rpg-pf','.75','--rpg-pe-axis','1','--rpg-slice-axis','2',
+                    '--nthreads','1','--nofit','--noqc'],check=True,capture_output=True,text=True,timeout=120)
+    assert (output/'dwi_preprocessed.nii').exists()
+    assert not (output/'metrics').exists()
+    assert json.loads((output/'gibbs.json').read_text())['method']=='rpg'
+    assert json.loads((output/'denoising.json').read_text())['method']=='adaptive'

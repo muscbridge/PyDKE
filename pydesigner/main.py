@@ -486,16 +486,9 @@ def main():
         args.degibbs = True
         args.rician = True
 
-    # Can't do WMTI if no fit
-    if args.nofit:
-        stdmsg = "--nofit given but "
-        if not args.akc:
-            warningmsg += msgstart + stdmsg + "--noakc" + override + "tensor fitting.\n"
-            args.nofit = False
-        if args.nooutliers:
-            warningmsg += msgstart + stdmsg + "--nooutliers"
-            warningmsg += override + "tensor fitting.\n"
-            args.nofit = False
+    # An explicit preprocessing-only request must never enable tensor fitting.
+    if args.nofit and (args.akc or args.nooutliers):
+        warningmsg += "Fitting-specific options are ignored with --nofit.\n"
 
     if args.denoise_method == "adaptive":
         args.denoise = True
