@@ -699,7 +699,9 @@ class DWI(object):
         --------
         (values, vectors) = dwi.dtiTensorParams(dt)
         """
-        values, vectors = np.linalg.eig(dt)
+        # Diffusion tensors are real symmetric; eigh keeps eigenvectors real
+        # across NumPy versions and avoids complex-valued scalar maps.
+        values, vectors = np.linalg.eigh(dt)
         idx = np.argsort(-values)
         values = -np.sort(-values)
         vectors = vectors[:, idx]

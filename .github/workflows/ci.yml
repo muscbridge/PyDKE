@@ -9,6 +9,12 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+  LOKY_MAX_CPU_COUNT: 2
+  MRTRIX_NTHREADS: 2
+  PYDKE_BUILD_RPG: 1
+  FFTW_PREFIX: /usr
 
 jobs:
   pytest:
@@ -25,8 +31,14 @@ jobs:
       - name: Install Python 3.14
         run: uv python install 3.14
 
+      - name: Install processing and RPG build dependencies
+        run: sudo apt-get update && sudo apt-get install -y mrtrix3 libfftw3-dev g++
+
       - name: Sync dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
+
+      - name: Require compiled RPG backend
+        run: uv run --no-sync python -c "from pydesigner.preprocessing import _rpg"
 
       - name: Run tests
-        run: uv run pytest
+        run: uv run --no-sync pytest

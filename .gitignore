@@ -19,3 +19,6 @@ docs/doctrees/
 **._./
 designer/._DESIGNER.py
 .nii
+
+# Locally compiled optional RPG extension
+pydesigner/preprocessing/_rpg*.so

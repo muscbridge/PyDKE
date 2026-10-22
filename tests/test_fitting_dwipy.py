@@ -432,3 +432,15 @@ def test_dwi_fbi_without_fbwm(capsys):
     assert is_all_none(De_fa)
     assert is_all_none(min_cost)
     assert is_all_none(min_cost_fn)
+
+
+def test_symmetric_diffusion_tensor_eigenvectors_real():
+    """Repeated and rotated eigenvalues must retain real orthogonal vectors."""
+    q,_ = np.linalg.qr(np.random.default_rng(61).normal(size=(3,3)))
+    for eigenvalues in ([1.,1.,1.],[.2,.3,1.5]):
+        tensor=q@np.diag(eigenvalues)@q.T
+        values,vectors=DWI.dtiTensorParams(None,tensor)
+        assert not np.iscomplexobj(vectors)
+        np.testing.assert_allclose(vectors@np.diag(values)@vectors.T,tensor,atol=1e-14)
+        np.testing.assert_allclose(vectors.T@vectors,np.eye(3),atol=1e-14)
+        assert np.all(np.diff(values)<=0)
