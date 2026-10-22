@@ -811,6 +811,7 @@ class DWI(object):
 
         diagnostics = {
             "solver_status": "not_requested" if cons is None else "not_run",
+            "solver_iterations": None,
             "fallback_used": False,
             "fallback_reason": None,
             "signal_samples_floored": int(np.sum(~np.isfinite(dwi) | (dwi < minZero))),
@@ -905,7 +906,7 @@ class DWI(object):
                 prob.solve(
                     solver=cvx.OSQP,
                     warm_start=True,
-                    max_iter=20000,
+                    max_iter=200000,
                     eps_abs=1e-9,
                     eps_rel=1e-9,
                     polishing=True,
@@ -913,6 +914,8 @@ class DWI(object):
                 )
 
             diagnostics["solver_status"] = prob.status
+            if prob.solver_stats is not None and prob.solver_stats.num_iters is not None:
+                diagnostics["solver_iterations"] = int(prob.solver_stats.num_iters)
             # Accept lower-accuracy successful solves too
             if prob.status in ("optimal", "optimal_inaccurate") and x.value is not None:
                 dt = np.asarray(x.value, dtype=np.float64).reshape(-1)
