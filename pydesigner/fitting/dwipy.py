@@ -790,13 +790,37 @@ class DWI(object):
         b: np.ndarray,
         cons: Union[np.ndarray, None] = None,
         warmup: Union[np.ndarray, None] = None,
-    ) -> np.ndarray:
-        """Weighted linear least squares for voxelwise DT/DKT fitting."""
+        return_diagnostics: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, dict]]:
+        """Weighted linear least squares for voxelwise DT/DKT fitting.
+
+        With return_diagnostics=True, return (coefficients, diagnostics),
+        exposing solver status, unconstrained fallback, signal flooring and
+        constraint residuals. The default array return remains unchanged.
+        Constraint margins use raw fitted coefficients before MD normalization.
+        """
 
         # Make inputs safe
         shat = np.asarray(shat, dtype=np.float64).reshape(-1)
         dwi = np.asarray(dwi, dtype=np.float64).reshape(-1)
         b = np.asarray(b, dtype=np.float64)
+
+        diagnostics = {
+            "solver_status": "not_requested" if cons is None else "not_run",
+            "fallback_used": False,
+            "fallback_reason": None,
+            "signal_samples_floored": int(np.sum(~np.isfinite(dwi) | (dwi < minZero))),
+            "nonfinite_solution_coefficients": 0,
+            "minimum_constraint_margin": None,
+        }
+
+        def result(coefficients, sanitize=False):
+            diagnostics["nonfinite_solution_coefficients"] = int(np.sum(~np.isfinite(coefficients)))
+            if sanitize:
+                coefficients = np.nan_to_num(coefficients, nan=minZero, posinf=minZero, neginf=minZero)
+            if cons is not None and len(cons) and np.isfinite(coefficients).all():
+                diagnostics["minimum_constraint_margin"] = float(np.min(cons @ coefficients))
+            return (coefficients, diagnostics) if return_diagnostics else coefficients
 
         # Avoid log(0), negative signal, NaN, Inf
         dwi = np.nan_to_num(dwi, nan=minZero, posinf=minZero, neginf=minZero)
@@ -822,7 +846,7 @@ class DWI(object):
 
         # Unconstrained fitting
         if cons is None:
-            return unconstrained_solution()
+            return result(unconstrained_solution())
 
         # Constrained fitting
         with np.errstate(all="ignore"):
@@ -855,21 +879,23 @@ class DWI(object):
                     verbose=False,
                 )
 
+            diagnostics["solver_status"] = prob.status
             # Accept lower-accuracy successful solves too
             if prob.status in ("optimal", "optimal_inaccurate") and x.value is not None:
                 dt = np.asarray(x.value, dtype=np.float64).reshape(-1)
                 # print(f"prob.status = {prob.status}")
             else:
+                diagnostics["fallback_used"] = True
+                diagnostics["fallback_reason"] = "solver_status: " + str(prob.status)
                 dt = unconstrained_solution()
 
         except (FloatingPointError, ValueError, cvx.error.SolverError) as e:
-            # TEMPORARY: keep this print while debugging
-            # print(f"WLLS constrained fallback: {type(e).__name__}: {e}")
+            diagnostics["solver_status"] = "error"
+            diagnostics["fallback_used"] = True
+            diagnostics["fallback_reason"] = type(e).__name__ + ": " + str(e)
             dt = unconstrained_solution()
 
-        dt = np.nan_to_num(dt, nan=minZero, posinf=minZero, neginf=minZero)
-        # print("current np.geterr() =", np.geterr())
-        return dt
+        return result(dt, sanitize=True)
 
     def fit(self, constraints: Union[np.ndarray[float], None] = None, reject: bool = None) -> Self:
         """Returns fitted diffusion or kurtosis tensor
@@ -980,7 +1006,7 @@ class DWI(object):
             [1 X 3] logical vector indicating which constraints
             out of three to enable (Default: [0, 1, 0])
             C1 is Dapp > 0
-            C1 is Kapp > 0
+            C2 is Kapp > 0
             C3 is Kapp < 3/(b*Dapp)
 
         Returns
@@ -1033,8 +1059,14 @@ class DWI(object):
                     np.hstack(
                         (
                             np.zeros((ndirs, 1)),
-                            3 / self.maxDKIBval() * np.tile(dcnt, [ndirs, 1]) * cDirs[:, dind[:, 0]],
+                            # log(S) = log(S0) - b*Dapp + b^2*Wraw/6.
+                            # Monotonicity through bmax requires
+                            # (3/bmax)*Dapp - Wraw >= 0, with complete
+                            # quadratic and quartic directional contractions.
+                            3 / self.maxDKIBval() * np.tile(dcnt, [ndirs, 1])
+                            * cDirs[:, dind[:, 0]] * cDirs[:, dind[:, 1]],
                             np.tile(-wcnt, [ndirs, 1])
+                            * cDirs[:, wind[:, 0]]
                             * cDirs[:, wind[:, 1]]
                             * cDirs[:, wind[:, 2]]
                             * cDirs[:, wind[:, 3]],
