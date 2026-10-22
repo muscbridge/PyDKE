@@ -317,11 +317,11 @@ class MP(object):
         npars = t
         if self.shrink == 'threshold':
             vals[t:] = 0
-            s = np.matrix(u) * np.diag(np.sqrt(vals)) * np.matrix(v)
+            s = u @ np.diag(np.sqrt(vals)) @ v
         else:
             vals_norm = np.sqrt(vals)/(np.sqrt(Mp)*sigma)
             vals_frobnorm = (np.sqrt(Mp)*sigma) * self.eig_shrink(vals_norm, Np/Mp)
-            s = np.matrix(u) * vals_frobnorm * np.matrix(v)
+            s = u @ vals_frobnorm @ v
 
         if M<N:
             s = np.conj(s).T

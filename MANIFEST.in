@@ -1,4 +1,6 @@
-include designer/fitting/*.csv
-include designer/tractography/*.mat
+include pydesigner/fitting/*.csv
+include pydesigner/tractography/*.mat
 global-exclude *.py[cod] __pycache__ *.so
 include pydesigner/preprocessing/DESIGNER_NOTICE.md
+include ACKNOWLEDGMENTS.md
+recursive-include pydesigner/preprocessing/rpg_backend *.cpp

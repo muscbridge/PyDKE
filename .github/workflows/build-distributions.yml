@@ -28,7 +28,14 @@ jobs:
         run: uv python install 3.14
 
       - name: Build distributions
-        run: uv build
+        run: uv build --python 3.14
+
+      - name: Install wheel and smoke-test outside checkout
+        run: |
+          uv venv --python 3.14 /tmp/pydke-wheel
+          uv pip install --python /tmp/pydke-wheel/bin/python dist/*.whl
+          cd /tmp
+          /tmp/pydke-wheel/bin/python -c "import pydesigner.fitting.dwipy; from pydesigner.preprocessing.adaptive import denoise_array; import numpy as np; assert np.isfinite(denoise_array(np.ones((3,3,3,6)), '3,3,3', 20)[0]).all()"
 
       - name: Show distributions
         run: ls -lh dist

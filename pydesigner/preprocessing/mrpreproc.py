@@ -282,6 +282,10 @@ def degibbs(
     nthreads: int = None,
     force: bool = False,
     verbose: bool = False,
+    method: str = "mrtrix",
+    pf: float = None,
+    pe_axis: int = None,
+    slice_axis: int = None,
 ) -> None:
     """Runs MRtrix3's `mrdegibbs` command with optimal parameters for
     PyDesigner.
@@ -305,6 +309,11 @@ def degibbs(
     -------
     None; writes out file
     """
+    if method == "rpg":
+        from .rpg import degibbs_mif
+        return degibbs_mif(input, output, pf, pe_axis, slice_axis, nthreads, force, verbose)
+    if method != "mrtrix":
+        raise ValueError("Gibbs method must be mrtrix or rpg")
     opts = modelmrtrix(
         input=input_path_validator(input, ".mif"),
         output=output_path_validator(output, ".mif"),

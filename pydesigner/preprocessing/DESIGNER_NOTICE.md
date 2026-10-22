@@ -21,3 +21,6 @@ References:
 - Gavish & Donoho (2017), doi:10.1109/TIT.2017.2653801.
 - Chen et al. (2024), Optimization and validation of the DESIGNER preprocessing
   pipeline for clinical diffusion MRI in white matter aging, Imaging Neuroscience.
+
+Python 3.14 / NumPy 2 compatibility: `np.matrix` multiplications were replaced
+with equivalent ndarray `@` operations, checked against pinned reference data.

@@ -173,6 +173,16 @@ def main():
         help="Denoising extent formatted n,n,n (forces  denoising. Default: 5,5,5.",
     )
     preprocessing_control.add_argument(
+        "--gibbs-method", choices=("mrtrix", "rpg"), default="mrtrix",
+        help="Gibbs correction backend; rpg enables DESIGNER partial-Fourier correction.",
+    )
+    preprocessing_control.add_argument("--rpg-pf", type=float, choices=(0.625, 0.75, 0.875, 1.0),
+                                       help="Explicit acquired Fourier fraction for RPG (not acceleration).")
+    preprocessing_control.add_argument("--rpg-pe-axis", type=int, choices=(0, 1, 2),
+                                       help="Phase-encoding axis in the input NIfTI voxel grid.")
+    preprocessing_control.add_argument("--rpg-slice-axis", type=int, choices=(0, 1, 2),
+                                       help="Slice axis in the input NIfTI voxel grid.")
+    preprocessing_control.add_argument(
         "-g",
         "--degibbs",
         action="store_true",
@@ -492,6 +502,17 @@ def main():
     elif args.denoise_patch_size is not None:
         parser.error("--denoise-patch-size requires --denoise-method adaptive")
 
+    if args.gibbs_method == "rpg":
+        if None in (args.rpg_pf, args.rpg_pe_axis, args.rpg_slice_axis):
+            parser.error("RPG requires --rpg-pf, --rpg-pe-axis and --rpg-slice-axis")
+        if args.rpg_pe_axis == args.rpg_slice_axis:
+            parser.error("RPG phase-encoding and slice axes must differ")
+        if args.reslice:
+            parser.error("RPG must run before interpolation; run --reslice in a later invocation")
+        args.degibbs = True
+    elif any(x is not None for x in (args.rpg_pf, args.rpg_pe_axis, args.rpg_slice_axis)):
+        parser.error("--rpg-* options require --gibbs-method rpg")
+
     # (Extent or Degibbs) and no Denoise
     if not args.denoise:
         stdmsg = "No --denoise but "
@@ -572,7 +593,7 @@ def main():
     cmdtable["input"] = mrinfoutil.commandhistory(working_path)
 
     # Check to make sure no partial fourier if --degibbs given
-    if args.degibbs and args.adv:
+    if args.degibbs and (args.adv or args.gibbs_method == "rpg"):
         args.degibbs = True
     else:
         if args.degibbs and filetable["dwi"].isPartialFourier():
@@ -789,9 +810,17 @@ def main():
         nii_degibbs = op.join(intermediatepath, degibbs_name_full + ".nii")
         mif_degibbs = op.join(outpath, degibbs_name_full + ".mif")
         # check to see if this already exists
+        from .preprocessing.denoise_config import check_resume
+        gibbs_config = dict(method=args.gibbs_method, pf=args.rpg_pf,
+                            pe_axis=args.rpg_pe_axis, slice_axis=args.rpg_slice_axis)
+        gibbs_record = op.join(outpath, "gibbs.json")
+        if args.resume:
+            check_resume(gibbs_record, gibbs_config, legacy_method="mrtrix")
         if not (args.resume and op.exists(nii_degibbs)):
             # run degibbs function
             mrpreproc.degibbs(
+                method=args.gibbs_method, pf=args.rpg_pf,
+                pe_axis=args.rpg_pe_axis, slice_axis=args.rpg_slice_axis,
                 input=working_path,
                 output=mif_degibbs,
                 nthreads=args.nthreads,
@@ -806,8 +835,9 @@ def main():
                 verbose=False,
             )
             # remove old working.mif and replace with new corrected .mif
-            os.remove(working_path)
-            os.rename(mif_degibbs, working_path)
+            os.replace(mif_degibbs, working_path)
+            with open(gibbs_record, "w") as f:
+                json.dump(gibbs_config, f, indent=2)
             # update command history
             cmdtable["degibbs"] = mrinfoutil.commandhistory(working_path)[-1]
             cmdtable["HEAD"] = cmdtable["degibbs"]
