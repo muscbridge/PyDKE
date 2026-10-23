@@ -8,8 +8,11 @@ are retained in the source. This component is for non-commercial research,
 not clinical care; see the complete notice in that file.
 
 Local changes: omit upstream process/CLI convenience wrappers; remove global
-warning suppression; default SVD attempts to one (fail rather than add random
-noise); return unchanged signal and zero sigma/rank for constant patches.
+warning suppression; replace random-noise SVD retries with one deterministic
+double-precision `gesvd` retry after a `LinAlgError` from the usual `gesdd`
+decomposition (propagate failure if both fail); return unchanged signal and
+zero sigma/rank for constant patches. The retry uses the same observations,
+patch selection and shrinkage; it does not add noise or change estimator options.
 The adaptive patch selection, wrap padding, noise estimator and Frobenius
 shrinkage are otherwise retained. The pyDKE adapter selects Cordero-Grande
 noise estimation, accepts only real magnitude data, validates patch sizes,

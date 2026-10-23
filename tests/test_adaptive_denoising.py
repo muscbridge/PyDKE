@@ -45,6 +45,54 @@ def test_nonfinite():
         denoise_array(data)
 
 
+def test_svd_failure_retries_same_patch_deterministically(monkeypatch):
+    import scipy.linalg
+    data = phantom()
+    unchanged = data.copy()
+    original_svd = scipy.linalg.svd
+
+    def direct_reference(matrix, **kwargs):
+        return original_svd(matrix.astype(np.float64), full_matrices=False,
+                            lapack_driver='gesvd')
+
+    monkeypatch.setattr(scipy.linalg, 'svd', direct_reference)
+    reference = denoise_array(data, '3,3,3', 20, 1)
+    fallback_calls = []
+
+    def fail_primary(matrix, **kwargs):
+        if kwargs.get('lapack_driver', 'gesdd') == 'gesdd':
+            raise np.linalg.LinAlgError('injected divide-and-conquer failure')
+        assert kwargs['lapack_driver'] == 'gesvd'
+        assert matrix.dtype == np.float64
+        fallback_calls.append(1)
+        return original_svd(matrix, **kwargs)
+
+    monkeypatch.setattr(scipy.linalg, 'svd', fail_primary)
+    with pytest.warns(RuntimeWarning, match='retrying the unchanged patch'):
+        first = denoise_array(data, '3,3,3', 20, 1)
+        second = denoise_array(data, '3,3,3', 20, 2)
+    assert len(fallback_calls) == 2 * np.prod(data.shape[:3])
+    np.testing.assert_array_equal(data, unchanged)
+    for actual, repeated, expected in zip(first, second, reference):
+        np.testing.assert_array_equal(actual, repeated)
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_svd_failure_propagates_when_both_drivers_fail(monkeypatch):
+    import scipy.linalg
+    calls = []
+
+    def fail(matrix, **kwargs):
+        calls.append(kwargs.get('lapack_driver', 'gesdd'))
+        raise np.linalg.LinAlgError('decomposition failed')
+
+    monkeypatch.setattr(scipy.linalg, 'svd', fail)
+    with pytest.warns(RuntimeWarning, match='retrying the unchanged patch'):
+        with pytest.raises(np.linalg.LinAlgError, match='decomposition failed'):
+            denoise_array(phantom(), '3,3,3', 20, 1)
+    assert calls[:2] == ['gesdd', 'gesvd']
+
+
 def test_original_backend_unchanged(tmp_path, monkeypatch):
     source=tmp_path/'in.mif'; source.touch()
     calls=[]
