@@ -331,6 +331,12 @@ def main():
     preprocessing_control.add_argument(
         "-w", "--window", action="store_true", default=False, help="Window final metric maps within biological ranges"
     )
+    estimation_control.add_argument("--scalar-only", action="store_true",
+        help="Write tensor/scalar maps without WMTI, ODF, FBI or tractography outputs.")
+    estimation_control.add_argument("--constraint-backend", choices=("sampled", "global-sos"),
+        default="sampled", help="Opt-in all-direction PSD/SOS constraints; requires pydke[physical].")
+    estimation_control.add_argument("--min-diffusivity", type=float, default=1e-6,
+        help="Global backend's in-fit minimum diffusivity in um^2/ms; default 1e-6.")
     estimation_control.add_argument(
         "--fit_constraints",
         default="0,1,0",
@@ -541,6 +547,12 @@ def main():
                 os.makedirs(args.output, exist_ok=True)
             except:  # noqa: E722
                 errmsg += "Cannot find or create output directory"
+
+    if args.constraint_backend == "global-sos":
+        if args.akc or args.window:
+            parser.error("global-sos cannot be combined with --akc or --window; preserve raw fits")
+        if not np.isfinite(args.min_diffusivity) or args.min_diffusivity <= 0:
+            parser.error("--min-diffusivity must be finite and positive")
 
     # Check that --fit_constraints can be converted to int array
     fit_constraints = np.fromstring(args.fit_constraints, dtype=int, sep=",")
@@ -1190,6 +1202,9 @@ def main():
                     rectify=fbi_rectify,
                     qcpath=fitqcpath,
                     fit_constraints=fit_constraints,
+                    constraint_backend=args.constraint_backend,
+                    min_diffusivity=args.min_diffusivity,
+                    scalar_only=args.scalar_only,
                     mask=fit_mask,
                     window=args.window,
                     nthreads=args.nthreads,
@@ -1209,6 +1224,9 @@ def main():
                 n_fibers=args.t_fibers,
                 qcpath=fitqcpath,
                 fit_constraints=fit_constraints,
+                constraint_backend=args.constraint_backend,
+                min_diffusivity=args.min_diffusivity,
+                    scalar_only=args.scalar_only,
                 mask=fit_mask,
                 window=args.window,
                 nthreads=args.nthreads,

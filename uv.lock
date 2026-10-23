@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.14"
 
 [[package]]
@@ -690,10 +690,16 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
 ]
+physical = [
+    { name = "clarabel" },
+    { name = "cvxpy" },
+]
 
 [package.metadata]
 requires-dist = [
+    { name = "clarabel", marker = "extra == 'physical'", specifier = ">=0.11,<1.0" },
     { name = "cvxpy", specifier = ">=1.3,<2.0" },
+    { name = "cvxpy", marker = "extra == 'physical'", specifier = ">=1.6,<2.0" },
     { name = "dipy", specifier = ">=1.12,<2.0" },
     { name = "joblib", specifier = ">=1.2,<2.0" },
     { name = "matplotlib", specifier = ">=3.8,<4.0" },
@@ -708,7 +714,7 @@ requires-dist = [
     { name = "threadpoolctl", specifier = ">=3.1,<4.0" },
     { name = "tqdm", specifier = ">=4.65,<5.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["physical", "dev"]
 
 [[package]]
 name = "pygments"

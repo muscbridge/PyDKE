@@ -35,7 +35,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y mrtrix3 libfftw3-dev g++
 
       - name: Sync dependencies
-        run: uv sync --locked --extra dev
+        run: uv sync --locked --extra dev --extra physical
 
       - name: Require compiled RPG backend
         run: uv run --no-sync python -c "from pydesigner.preprocessing import _rpg"
