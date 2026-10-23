@@ -10,7 +10,7 @@ software checks; they are not biological validity thresholds.
 | Branch | Purpose | Integration policy |
 | --- | --- | --- |
 | `feature/preprocessing-integration` | Original MRtrix MP-PCA plus optional DESIGNER adaptive MP-PCA and RPG Gibbs correction | Keep separate from `master` during validation. |
-| `codex/azm-small-animal-validation` | Combined preprocessing code, fitting corrections, optional global PSD/SOS constraints and corrected scalar calculations | Continue testing on this branch; keep its PR in draft against `feature/preprocessing-integration`. |
+| `codex/azm-small-animal-validation` | Combined preprocessing code, fitting corrections, optional global PSD/SOS constraints, corrected scalars and opt-in noncentral-chi noise-bias correction | Continue testing on this branch; keep its PR in draft against `feature/preprocessing-integration`. |
 
 **Do not merge either branch into `master`, or release it as the production
 replacement, without the user's explicit approval.** Passing tests does not grant
@@ -134,6 +134,7 @@ Rerun affected gates after code, dependency or build changes.
 | 2026-10-22 | `dc0cc74f74aa1b008ccf4bb360eef7f515dec57c` | Combined source revision introducing the optional global backend and stable raw tensor scalars; installed-suite record reports 173 passed. Confirm current candidate and rerun affected tests before integration. |
 | 2026-10-23 | `dc0cc74f74aa1b008ccf4bb360eef7f515dec57c` | Installed native-wheel physical fitting on the existing five-voxel human excerpt, existing sampled regression, adaptive synthetic execution and compiled RPG axis-invariance execution passed outside the checkout; imported source hashes matched. This is bounded regression coverage. |
 | 2026-10-23 | `cfd282a` (preprocessing), `f933bac` (combined) | Deterministic double-precision `gesvd` retry after a primary SVD convergence error, with unchanged observations and explicit warning. Source suites: 153 preprocessing / 175 combined tests passed. Installed native-wheel suite outside checkout: 175 passed (83 existing deprecation warnings). Universal/native wheels and sdists built; four strict metadata checks and component-credit/source checks passed. |
+| 2026-10-23 | `b9e67c29b63a9ea852d19c7b004c48d2d2a00d00` | Optional MP-PCA magnitude-profile joint Koay inversion and explicitly supplied Gaussian-profile inversion. Python 3.14.7 source and installed native-wheel suites: 280 passed each, no skips (80 noise-model and 25 real-MRtrix/CLI workflow tests). Existing fitting deprecations: 83; source run also reported one cache-write warning. Both denoisers produce identical pre-bias arrays/noise maps with the new stage enabled. Default/native wheels and sdists built; four strict metadata and component-credit checks passed. Universal-wheel smoke passed; installed source hashes matched the candidate. |
 | Pending | Current candidate | Acquisition-specific preprocessing efficacy, broader end-to-end comparisons and application-specific agreement margins remain separate from numerical execution. Passing software checks does not grant approval to replace MATLAB DKE or merge into master. |
 
 Known limits remain explicit: the human regression fixture is a small image
