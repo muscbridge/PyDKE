@@ -266,16 +266,20 @@ class MP(object):
         if M < N:
             X = np.conj(X).T
 
-        for retry in range(max_retries):
-            try:
-                u, vals, v = scipy.linalg.svd(X, full_matrices=False)
-                break
-            except np.linalg.LinAlgError:
-                if retry == max_retries - 1:
-                    raise
-                print(f"SVD did not converge. Retrying {retry + 1}/{max_retries}...")
-                X += np.random.normal(scale=1e-6, size=X.shape)
-        # u,vals,v = scipy.linalg.svd(X, full_matrices=False)
+        # Keep the pinned implementation's usual decomposition unchanged.
+        # If divide-and-conquer SVD fails on a finite patch, retry the same
+        # matrix using double precision and the independent QR driver. Never
+        # perturb the observations or silently return an undenoised patch.
+        # max_retries is retained for compatibility with the private MP API.
+        try:
+            u, vals, v = scipy.linalg.svd(X, full_matrices=False)
+        except np.linalg.LinAlgError:
+            warnings.warn(
+                'MP-PCA SVD did not converge; retrying the unchanged patch '
+                'with double-precision gesvd', RuntimeWarning, stacklevel=2)
+            dtype = np.result_type(X.dtype, np.float64)
+            u, vals, v = scipy.linalg.svd(
+                X.astype(dtype), full_matrices=False, lapack_driver='gesvd')
         vals = (vals**2).astype('float32')
 
         order = np.argsort(vals)[::-1]
