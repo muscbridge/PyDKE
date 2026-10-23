@@ -612,16 +612,8 @@ class DWI(object):
         grad = dwi.radialSampling(dir, number_of_dirs).
 
         """
-        dt = 2 * np.pi / n
-        theta = np.arange(0, 2 * np.pi - dt, dt)
-        dirs = np.vstack((np.cos(theta), np.sin(theta), 0 * theta))
-        v = np.hstack((-dir[1], dir[0], 0))
-        s = np.sqrt(np.sum(v**2))
-        c = dir[2]
-        V = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-        R = np.eye(3) + V + np.matmul(V, V) * (1 - c) / (s**2)
-        dirs = np.matmul(R, dirs).T
-        return dirs
+        from .physical import perpendicular_circle
+        return perpendicular_circle(dir, n)
 
     def diffusionCoeff(self, dt: np.ndarray[float], dir: np.ndarray[float]) -> np.ndarray[float]:
         """Computes apparent diffusion coefficient (ADC).
@@ -668,17 +660,22 @@ class DWI(object):
         --------
         adc = dwi.kurtosisCoeff(dt, dir)
         """
+        from .physical import diffusion_matrix
+        dt = np.asarray(dt, dtype=float)
+        if dt.ndim == 1:
+            dt = dt[:, None]
         wcnt, wind = self.createTensorOrder(4)
         ndir = dir.shape[0]
         adc = self.diffusionCoeff(dt[:6], dir)
-        adc[adc < minZero] = minZero
         md = np.sum(dt[np.array([0, 3, 5])], 0) / 3
-        bW = (
-            np.tile(wcnt, (ndir, 1)) * dir[:, wind[:, 0]] * dir[:, wind[:, 1]] * dir[:, wind[:, 2]] * dir[:, wind[:, 3]]
-        )
-        akc = np.matmul(bW, dt[6:])
-        akc = (akc * np.tile(md**2, (adc.shape[0], 1))) / (adc**2)
-        return akc
+        bW = np.tile(wcnt, (ndir, 1)) * np.prod(dir[:, wind], axis=2)
+        numerator = (bW @ dt[6:]) * md[None, :]**2
+        valid = np.isfinite(dt).all(axis=0)
+        for i in np.flatnonzero(valid):
+            valid[i] = np.linalg.eigvalsh(diffusion_matrix(dt[:6, i]))[0] > 0
+        result = np.full(adc.shape, np.nan)
+        np.divide(numerator, adc**2, out=result, where=(adc > 0) & valid[None, :])
+        return result
 
     def dtiTensorParams(self, dt: np.ndarray[float]) -> Tuple[np.ndarray[float], np.ndarray[float]]:
         """Computes sorted DTI tensor eigenvalues and eigenvectors.
@@ -735,12 +732,14 @@ class DWI(object):
         --------
         (rk, ak, kfa, mkt) = dwi.dkiTensorParams(v1, dt)
         """
-        dirs = np.vstack((v1, -v1))
-        akc = self.kurtosisCoeff(dt, dirs)
-        ak = np.mean(akc)
-        dirs = self.radialSampling(v1, dirSample)
-        akc = self.kurtosisCoeff(dt, dirs)
-        rk = np.mean(akc)
+        from .physical import exact_axial_radial
+        dt = np.asarray(dt, dtype=float).reshape(21)
+        try:
+            ak, rk = exact_axial_radial(v1, dt)
+        except ValueError:
+            # Invalid tensors are undefined, not finite values created by
+            # flooring ADC before division. Raw tensors remain available.
+            return np.nan, np.nan, np.nan, np.nan
         W_F = np.sqrt(
             dt[6] ** 2
             + dt[16] ** 2
@@ -790,13 +789,59 @@ class DWI(object):
         b: np.ndarray,
         cons: Union[np.ndarray, None] = None,
         warmup: Union[np.ndarray, None] = None,
-    ) -> np.ndarray:
-        """Weighted linear least squares for voxelwise DT/DKT fitting."""
+        return_diagnostics: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, dict]]:
+        """Weighted linear least squares for voxelwise DT/DKT fitting.
+
+        With return_diagnostics=True, return (coefficients, diagnostics),
+        exposing solver status, unconstrained fallback, signal flooring and
+        constraint residuals. The default array return remains unchanged.
+        Constraint margins use raw fitted coefficients before MD normalization.
+        Constrained objectives are normalized by a common positive weight scale.
+        A solver success status alone is insufficient: sampled inequality margins
+        are checked. Invalid constrained results raise unless diagnostics were
+        explicitly requested, in which case valid_constrained_solution is False.
+        """
 
         # Make inputs safe
         shat = np.asarray(shat, dtype=np.float64).reshape(-1)
         dwi = np.asarray(dwi, dtype=np.float64).reshape(-1)
         b = np.asarray(b, dtype=np.float64)
+
+        diagnostics = {
+            "solver_status": "not_requested" if cons is None else "not_run",
+            "solver_iterations": None,
+            "fallback_used": False,
+            "fallback_reason": None,
+            "signal_samples_floored": int(np.sum(~np.isfinite(dwi) | (dwi < minZero))),
+            "nonfinite_solution_coefficients": 0,
+            "minimum_constraint_margin": None,
+            "constraint_margin_tolerance": 1e-6,
+            "valid_constrained_solution": None,
+            "weight_normalization_factor": 1.0,
+        }
+
+        def result(coefficients, sanitize=False):
+            diagnostics["nonfinite_solution_coefficients"] = int(np.sum(~np.isfinite(coefficients)))
+            if sanitize:
+                coefficients = np.nan_to_num(coefficients, nan=minZero, posinf=minZero, neginf=minZero)
+            if cons is not None and len(cons) and np.isfinite(coefficients).all():
+                diagnostics["minimum_constraint_margin"] = float(np.min(cons @ coefficients))
+            if cons is not None:
+                margin = diagnostics["minimum_constraint_margin"]
+                diagnostics["valid_constrained_solution"] = bool(
+                    not diagnostics["fallback_used"]
+                    and diagnostics["solver_status"] in ("optimal", "optimal_inaccurate")
+                    and diagnostics["nonfinite_solution_coefficients"] == 0
+                    and margin is not None
+                    and margin >= -diagnostics["constraint_margin_tolerance"]
+                )
+                if not diagnostics["valid_constrained_solution"] and not return_diagnostics:
+                    raise RuntimeError(
+                        "Constrained WLLS did not produce a valid sampled-constraint solution; "
+                        "request return_diagnostics=True to inspect status, fallback and residuals"
+                    )
+            return (coefficients, diagnostics) if return_diagnostics else coefficients
 
         # Avoid log(0), negative signal, NaN, Inf
         dwi = np.nan_to_num(dwi, nan=minZero, posinf=minZero, neginf=minZero)
@@ -804,6 +849,16 @@ class DWI(object):
 
         shat = np.nan_to_num(shat, nan=0.0, posinf=0.0, neginf=0.0)
         shat = np.clip(shat, 0.0, 1e6)
+        if cons is not None:
+            scale = float(np.max(shat))
+            diagnostics["weight_normalization_factor"] = scale
+            if scale <= 0:
+                diagnostics["solver_status"] = "invalid_weights"
+                return result(np.full(b.shape[1], np.nan), sanitize=True)
+            # A common positive factor leaves the exact WLS minimizer unchanged.
+            # It prevents absolute MRI intensity from relaxing the relative QP
+            # stopping criterion for the much smaller physical constraint rows.
+            shat = shat / scale
 
         w = np.diag(shat)
 
@@ -822,7 +877,7 @@ class DWI(object):
 
         # Unconstrained fitting
         if cons is None:
-            return unconstrained_solution()
+            return result(unconstrained_solution())
 
         # Constrained fitting
         with np.errstate(all="ignore"):
@@ -850,28 +905,35 @@ class DWI(object):
                 prob.solve(
                     solver=cvx.OSQP,
                     warm_start=True,
-                    max_iter=20000,
-                    polish=True,
+                    max_iter=200000,
+                    eps_abs=1e-9,
+                    eps_rel=1e-9,
+                    polishing=True,
                     verbose=False,
                 )
 
+            diagnostics["solver_status"] = prob.status
+            if prob.solver_stats is not None and prob.solver_stats.num_iters is not None:
+                diagnostics["solver_iterations"] = int(prob.solver_stats.num_iters)
             # Accept lower-accuracy successful solves too
             if prob.status in ("optimal", "optimal_inaccurate") and x.value is not None:
                 dt = np.asarray(x.value, dtype=np.float64).reshape(-1)
                 # print(f"prob.status = {prob.status}")
             else:
+                diagnostics["fallback_used"] = True
+                diagnostics["fallback_reason"] = "solver_status: " + str(prob.status)
                 dt = unconstrained_solution()
 
         except (FloatingPointError, ValueError, cvx.error.SolverError) as e:
-            # TEMPORARY: keep this print while debugging
-            # print(f"WLLS constrained fallback: {type(e).__name__}: {e}")
+            diagnostics["solver_status"] = "error"
+            diagnostics["fallback_used"] = True
+            diagnostics["fallback_reason"] = type(e).__name__ + ": " + str(e)
             dt = unconstrained_solution()
 
-        dt = np.nan_to_num(dt, nan=minZero, posinf=minZero, neginf=minZero)
-        # print("current np.geterr() =", np.geterr())
-        return dt
+        return result(dt, sanitize=True)
 
-    def fit(self, constraints: Union[np.ndarray[float], None] = None, reject: bool = None) -> Self:
+    def fit(self, constraints: Union[np.ndarray[float], None] = None, reject: bool = None,
+            constraint_backend: str = "sampled", min_diffusivity: float = 1e-6) -> Self:
         """Returns fitted diffusion or kurtosis tensor
 
         Parameters
@@ -929,7 +991,35 @@ class DWI(object):
         reject_ = vectorize(reject, self.mask).astype(bool)
         init = np.matmul(np.linalg.pinv(self.b), np.log(dwi_))
         shat = highprecisionexp(np.matmul(self.b, init))
-        if constraints is None or (constraints[0] == 0 and constraints[1] == 0 and constraints[2] == 0):
+        if constraint_backend not in ("sampled", "global-sos"):
+            raise ValueError("Unknown constraint backend")
+        self.constraint_backend = constraint_backend
+        if constraint_backend == "global-sos":
+            from .physical import PhysicalDkiFitter
+            # Solver objects are reused serially, not shared across workers.
+            self.workers = 1
+            flags = [0, 0, 0] if constraints is None else constraints
+            from collections import OrderedDict
+            models = OrderedDict()
+            fits = []
+            self.fit_diagnostics = []
+            for i in tqdm(range(dwi_.shape[1]), desc="Global SOS Tensor Fit"):
+                keep = ~reject_[:, i]
+                key = keep.tobytes()
+                if key not in models:
+                    models[key] = PhysicalDkiFitter(self.b[keep], self.maxDKIBval(),
+                        flags=flags, min_diffusivity=min_diffusivity)
+                models.move_to_end(key)
+                if len(models) > 8:
+                    models.popitem(last=False)
+                beta, diagnostic = models[key].fit(shat[keep, i], dwi_[keep, i])
+                diagnostic["voxel_index"] = i
+                self.fit_diagnostics.append(diagnostic)
+                if not diagnostic["valid_physical_fit"]:
+                    raise RuntimeError("Global SOS certificate failed at masked voxel " + str(i))
+                fits.append(beta)
+            self.dt = fits
+        elif constraints is None or (constraints[0] == 0 and constraints[1] == 0 and constraints[2] == 0):
             inputs = tqdm(
                 range(0, dwi_.shape[1]),
                 desc="Unconstrained Tensor Fit",
@@ -980,7 +1070,7 @@ class DWI(object):
             [1 X 3] logical vector indicating which constraints
             out of three to enable (Default: [0, 1, 0])
             C1 is Dapp > 0
-            C1 is Kapp > 0
+            C2 is Kapp > 0
             C3 is Kapp < 3/(b*Dapp)
 
         Returns
@@ -1033,8 +1123,14 @@ class DWI(object):
                     np.hstack(
                         (
                             np.zeros((ndirs, 1)),
-                            3 / self.maxDKIBval() * np.tile(dcnt, [ndirs, 1]) * cDirs[:, dind[:, 0]],
+                            # log(S) = log(S0) - b*Dapp + b^2*Wraw/6.
+                            # Monotonicity through bmax requires
+                            # (3/bmax)*Dapp - Wraw >= 0, with complete
+                            # quadratic and quartic directional contractions.
+                            3 / self.maxDKIBval() * np.tile(dcnt, [ndirs, 1])
+                            * cDirs[:, dind[:, 0]] * cDirs[:, dind[:, 1]],
                             np.tile(-wcnt, [ndirs, 1])
+                            * cDirs[:, wind[:, 0]]
                             * cDirs[:, wind[:, 1]]
                             * cDirs[:, wind[:, 2]]
                             * cDirs[:, wind[:, 3]],
@@ -1123,7 +1219,11 @@ class DWI(object):
                 delayed(self.dtiTensorParams)(DT[:, :, i]) for i in inputs
             )
         )
-        values = np.reshape(np.abs(values), (nvox, 3))
+        values = np.reshape(values, (nvox, 3))
+        self.raw_diffusion_eigenvalues = values.copy()
+        scalar_valid = np.isfinite(values).all(axis=1) & (np.min(values, axis=1) > 0)
+        self.scalar_validity_mask = vectorize(scalar_valid.astype(np.uint8), self.mask)
+        values[~scalar_valid] = np.nan
         vectors = np.reshape(vectors, (nvox, 3, 3))
         self.DTIvectors = vectors
         l1 = vectorize(values[:, 0], self.mask)
@@ -3197,6 +3297,9 @@ def fit_regime(
     mask: Union[str, None] = None,
     window: bool = False,
     nthreads: Union[int, None] = None,
+    constraint_backend: str = "sampled",
+    min_diffusivity: float = 1e-6,
+    scalar_only: bool = False,
 ) -> None:
     """Performs the entire tensor fitting regime and writes out maps.
     Uses auto-detections methods to determine the types of protocols
@@ -3247,6 +3350,12 @@ def fit_regime(
         available workers.
         (Default: None)
     """
+    if constraint_backend == "global-sos" and (akc or window):
+        raise ValueError("global-sos requires akc=False and window=False; retain raw certified fits")
+    if constraint_backend not in ("sampled", "global-sos"):
+        raise ValueError("Unknown constraint backend")
+    if not np.isfinite(min_diffusivity) or min_diffusivity <= 0:
+        raise ValueError("min_diffusivity must be finite and positive")
     if prefix is None:
         prefix = ""
     if suffix is None:
@@ -3254,6 +3363,8 @@ def fit_regime(
     if ext is None:
         ext = ".nii"
     img = DWI(input, mask=mask, nthreads=nthreads)
+    # Preserve NaN invalid scalars and raw fitted values even for integer inputs.
+    img.hdr.header.set_data_dtype(np.float32)
     protocols = img.tensorType()
     print("Protocol(s) detected: {}".format(", ".join([x.upper() for x in protocols])))
     fname_dti = {}
@@ -3312,10 +3423,18 @@ def fit_regime(
                     )
                 os.remove(bvals_outlier_full)
     if irlls:
-        img.fit(fit_constraints, reject=outliers)
+        img.fit(fit_constraints, reject=outliers, constraint_backend=constraint_backend,
+                min_diffusivity=min_diffusivity)
     else:
-        img.fit(fit_constraints)
+        img.fit(fit_constraints, constraint_backend=constraint_backend,
+                min_diffusivity=min_diffusivity)
 
+    if constraint_backend == "global-sos":
+        import json
+        with open(op.join(output, "physical_fit_diagnostics.json"), "w") as handle:
+            json.dump({"backend": constraint_backend, "min_diffusivity": min_diffusivity,
+                       "constraint_flags": list(map(int, fit_constraints)),
+                       "fits": img.fit_diagnostics}, handle, indent=2)
     if akc and img.isdki():
         akc_out = img.akcoutliers()
         img.akccorrect(akc_out)
@@ -3334,29 +3453,33 @@ def fit_regime(
     # DTI Parameters
     if img.isdti():
         md, rd, ad, fa, fe, trace = img.extractDTI()
+        writeNii(img.scalar_validity_mask, img.hdr, op.join(output, "tensor_scalar_validity_mask.nii"))
+        writeNii(vectorize(img.raw_diffusion_eigenvalues.T, img.mask), img.hdr,
+                 op.join(output, "raw_diffusion_eigenvalues.nii"))
         writeNii(md, img.hdr, op.join(output, fname_dti["md"]), range=th.__md__, clip=window)
         writeNii(rd, img.hdr, op.join(output, fname_dti["rd"]), range=th.__rd__, clip=window)
         writeNii(ad, img.hdr, op.join(output, fname_dti["ad"]), range=th.__ad__, clip=window)
         writeNii(fa, img.hdr, op.join(output, fname_dti["fa"]), range=th.__fa__, clip=window)
         writeNii(fe, img.hdr, op.join(output, fname_dti["fe"]))
         writeNii(trace, img.hdr, op.join(output, fname_dti["trace"]))
-        dtimodel = odf.odfmodel(dt=op.join(output, fname_tensor["DT"]), mask=mask, l_max=2, res=res)
-        dti_odfs = dtimodel.dtiodf()
-        dti_sh = dtimodel.odf2sh(dti_odfs)
-        dtimodel.savenii(dti_sh, op.join(output, fname_dti["odf"]))
-        dsistudio.makefib(
-            input=op.join(output, fname_dti["odf"]),
-            output=op.join(output, fname_tractography["dti"]),
-            map=op.join(output, fname_dti["fa"]),
-            mask=mask,
-            n_fibers=n_fibers,
-            scale=0.5,
-            other_maps=[
-                op.join(output, fname_dti["md"]),
-                op.join(output, fname_dti["rd"]),
-                op.join(output, fname_dti["ad"]),
-            ],
-        )
+        if not scalar_only:
+            dtimodel = odf.odfmodel(dt=op.join(output, fname_tensor["DT"]), mask=mask, l_max=2, res=res)
+            dti_odfs = dtimodel.dtiodf()
+            dti_sh = dtimodel.odf2sh(dti_odfs)
+            dtimodel.savenii(dti_sh, op.join(output, fname_dti["odf"]))
+            dsistudio.makefib(
+                input=op.join(output, fname_dti["odf"]),
+                output=op.join(output, fname_tractography["dti"]),
+                map=op.join(output, fname_dti["fa"]),
+                mask=mask,
+                n_fibers=n_fibers,
+                scale=0.5,
+                other_maps=[
+                    op.join(output, fname_dti["md"]),
+                    op.join(output, fname_dti["rd"]),
+                    op.join(output, fname_dti["ad"]),
+                ],
+            )
     if img.isdki():
         # DKI Parameters
         mk, rk, ak, kfa, mkt, trace = img.extractDKI()
@@ -3366,6 +3489,8 @@ def fit_regime(
         writeNii(kfa, img.hdr, op.join(output, fname_dki["kfa"]), range=th.__kfa__, clip=window)
         writeNii(mkt, img.hdr, op.join(output, fname_dki["mkt"]))
         writeNii(trace, img.hdr, op.join(output, fname_dki["trace"]))
+        if scalar_only:
+            return
         # WMTI Parameters
         awf, eas_ad, eas_rd, eas_tort, ias_da = img.extractWMTI()
         writeNii(awf, img.hdr, op.join(output, fname_wmti["awf"]), range=th.__wawf__, clip=window)
@@ -3405,6 +3530,8 @@ def fit_regime(
                 op.join(output, fname_wmti["ias_da"]),
             ],
         )
+    if scalar_only:
+        return
     if img.isfbi():
         if img.isfbwm():
             (

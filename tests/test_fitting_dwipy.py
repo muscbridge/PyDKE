@@ -236,9 +236,10 @@ def test_dwi_fibonacci_sphere_success():
 def test_dwi_radial_sampling():
     dwi = DWI(PATH_DWI, PATH_BVEC, PATH_BVAL, PATH_MASK)
     samples = 128
-    dirs = dwi.radialSampling(dirs30, samples)
+    dirs = dwi.radialSampling(dirs30[0], samples)
     assert dirs.dtype == np.float64
-    assert np.shape(dirs) == (samples - 1, 3)
+    assert np.shape(dirs) == (samples, 3)
+    np.testing.assert_allclose(dirs @ dirs30[0], 0, atol=1e-12)
 
 
 def test_dwi_constraints_invalid():
