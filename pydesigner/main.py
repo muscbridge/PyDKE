@@ -18,6 +18,7 @@ from .fitting import dwipy as dp
 from .plotting import motionplot, snrplot
 from .postprocessing import filters
 from .preprocessing import mrinfoutil, mrpreproc, util
+from .preprocessing.sos_mif import add_sos_arguments, validate_sos_arguments
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
@@ -415,8 +416,11 @@ def main():
     )
     program_control.add_argument("-v", "--version", action="version", version=__version__)
 
+    add_sos_arguments(preprocessing_control)
+
     # Use argument specification to actually get args
     args = parser.parse_args()
+    validate_sos_arguments(parser, args)
     print(args)
 
     # -----------------------------------------------------------------
@@ -490,7 +494,7 @@ def main():
         args.csf_adc = 2
         args.mask = True
         args.degibbs = True
-        args.rician = True
+        args.rician = not args.sos_noise_correct
 
     # An explicit preprocessing-only request must never enable tensor fitting.
     if args.nofit and (args.akc or args.nooutliers):
@@ -754,6 +758,47 @@ def main():
         filetable["noisemap"] = DWIFile(nii_noisemap)
 
     # -----------------------------------------------------------------
+    # Optional SoS/noncentral-chi magnitude bias model, on the native grid.
+    # This stage neither enables nor changes thermal denoising.
+    # -----------------------------------------------------------------
+    if args.sos_noise_correct:
+        from .preprocessing.sos_mif import correct_sos_mif
+        step_count += 1
+        stage_name = str(step_count) + "_dwi_sos_bias"
+        mif_sos = op.join(outpath, stage_name + ".mif")
+        nii_sos = op.join(intermediatepath, stage_name + ".nii")
+        summary = correct_sos_mif(
+            input=working_path, output=mif_sos,
+            sigma=args.sos_sigma or filetable["noisemap"].getFull(),
+            sigma_convention=args.sos_sigma_convention,
+            n_eff=args.sos_effective_coils, n_eff_map=args.sos_effective_coils_map,
+            nthreads=args.nthreads if args.nthreads is not None else 1,
+            force=args.force,
+        )
+        summary["noise_profile_source"] = "supplied" if args.sos_sigma else "current_mp_pca"
+        summary["denoise_method"] = args.denoise_method if args.denoise else None
+        mrpreproc.miftonii(input=mif_sos, output=nii_sos,
+                          nthreads=args.nthreads, force=args.force, verbose=False)
+        # working.mif is temporary. Point provenance at the retained native-grid
+        # bias-stage NIfTI, including its correction marker JSON sidecar.
+        from .preprocessing.sos_mif import _sha
+        summary["transient_mif_output"] = summary["output"]
+        summary["transient_mif_output_sha256"] = summary["output_sha256"]
+        summary["output"] = nii_sos
+        summary["output_sha256"] = _sha(nii_sos)
+        summary["output_json"] = op.splitext(nii_sos)[0] + ".json"
+        summary["output_json_sha256"] = _sha(summary["output_json"])
+        for record in (op.join(outpath, "sos_noise.json"),
+                       op.join(summary["qc_directory"], "summary.json")):
+            with open(record, "w") as stream:
+                json.dump(summary, stream, indent=2, allow_nan=False)
+        os.replace(mif_sos, working_path)
+        cmdtable["sos_noise_bias"] = summary
+        cmdtable["HEAD"] = cmdtable["sos_noise_bias"]
+        filetable["sos_noise_corrected"] = DWIFile(nii_sos)
+        filetable["HEAD"] = filetable["sos_noise_corrected"]
+
+    # -----------------------------------------------------------------
     # Run Reslicing
     # -----------------------------------------------------------------
     if args.reslice:
@@ -777,15 +822,16 @@ def main():
                 force=args.force,
                 verbose=args.verbose,
             )
-            mrpreproc.reslice(
-                input=nii_noisemap,
-                output=nii_noise,
-                size=args.reslice,
-                interp=args.interp,
-                nthreads=args.nthreads,
-                force=True,
-                verbose=args.verbose,
-            )
+            if "noisemap" in filetable:
+                mrpreproc.reslice(
+                    input=nii_noisemap,
+                    output=nii_noise,
+                    size=args.reslice,
+                    interp=args.interp,
+                    nthreads=args.nthreads,
+                    force=True,
+                    verbose=args.verbose,
+                )
             mrpreproc.miftonii(
                 input=mif_reslice,
                 output=nii_reslice,
@@ -796,7 +842,8 @@ def main():
             # remove old working.mif and replace with new corrected .mif
             os.remove(working_path)
             os.rename(mif_reslice, working_path)
-            os.rename(nii_noise, nii_noisemap)
+            if "noisemap" in filetable:
+                os.rename(nii_noise, nii_noisemap)
             # update command history
             cmdtable["reslice"] = mrinfoutil.commandhistory(working_path)[-1]
             cmdtable["HEAD"] = cmdtable["reslice"]
@@ -1126,7 +1173,9 @@ def main():
     # -----------------------------------------------------------------
     # Compute SNR
     # -----------------------------------------------------------------
-    if (args.denoise and not args.reslice) and not args.noqc:
+    if args.sos_noise_correct and args.denoise and not args.noqc:
+        log.info("SNR plotting skipped: original magnitude noise is not the variance after nonlinear SoS bias correction.")
+    if (args.denoise and not args.reslice and not args.sos_noise_correct) and not args.noqc:
         files = []
         files.append(init_nii)
         files.append(filetable["HEAD"].getFull())

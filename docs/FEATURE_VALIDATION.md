@@ -144,3 +144,52 @@ an independent reference; and a single study case cannot establish performance
 across populations, protocols or pathology. Passing numerical gates allows
 further testing. Readiness to replace MATLAB DKE requires reviewed comparison
 evidence and the user's separate approval to merge into `master`.
+
+## Opt-in SoS magnitude-bias model on the small-animal validation branch
+
+The noncentral-chi noise-bias option is separate from thermal denoising and from
+`global-sos` polynomial fitting constraints. It must not enable or change either
+original or adaptive MP-PCA. The CLI's default sigma convention for this option
+is `magnitude`: generalized Koay inversion uses a denoised magnitude-mean estimate
+and the MP-PCA magnitude standard-deviation profile to infer both amplitude and
+an effective Gaussian component standard deviation. An independent Gaussian
+calibration file is **not required** for this mode. The inferred quantity is
+model-based, not a receiver-noise calibration.
+
+The effective coil parameter must be supplied explicitly as a scalar or spatial
+map, may be fractional, and has a supported numerical range of **1 to 4096**.
+Physical receiver count does not establish its effective value. Preserve its
+provenance or reference-assumption label; never infer a default from hardware or
+choose it to reduce kurtosis extremes. A spatial map and a scalar are mutually
+exclusive alternatives.
+
+The alternative `per-component-gaussian` convention remains available when the
+underlying Gaussian standard deviation per real/imaginary component is supplied
+explicitly. It inverts the first moment without joint noise estimation. Do not
+silently substitute an MP-PCA magnitude profile for Gaussian component sigma.
+Neither convention is a raw second-moment subtraction or a post-denoising
+residual-noise model.
+
+| Gate | Required evidence |
+| --- | --- |
+| Mean and variance mathematics | Validate the single-coil Rician limit independently; compare general/fractional-coil means and variances with independent distribution quadrature. Verify joint amplitude/noise recovery, supplied-Gaussian inversion and intensity scaling. |
+| Numerical range | Exercise high SNR through dimensionless amplitude 1e5, the exact/asymptotic variance transition and supported effective-coil range. Check actual convergence; raise on numerical failure rather than returning partial or uncorrected values. |
+| Near-zero behavior | Test the central mean/SD-ratio boundary and near-zero ill-conditioning. Preserve zero boundary outputs and negative-estimate, zero-noise and ill-conditioned QC masks/counts; apply no absolute-value reflection, positive signal floor or outcome-based exclusion. |
+| Profiles and geometry | Test scalar/spatial/full-volume sigma profiles and effective-coil scalar/spatial maps, nonmutation and mask handling. Preserve physical-grid positions and metadata, allowing only verified lossless axis permutations; do not register or interpolate parameter maps. |
+| Explicit workflow | Require `--sos-input-domain magnitude-mean`; use the magnitude noise map from explicitly selected denoising or a supplied profile. An external mean/profile pair must not trigger denoising again. Reject simultaneous `--rician`, tagged double correction and resume/nonempty output reuse. |
+| Provenance | Retain input/profile hashes, effective-coil assumptions, sigma convention, algorithm version, convergence evidence and QC. Magnitude mode exports the inferred per-sample Gaussian sigma with an explicit model-inference label. |
+| Regression and distribution | Existing human/default/legacy behavior must pass. Run source, installed-wheel and bounded workflow tests for the candidate; execution alone is not acquisition-specific accuracy evidence. |
+
+The separate bias stage runs after denoising when requested and before
+interpolation, motion correction and smoothing. Original/adaptive denoising
+remain unchanged choices. With `--standard`, the option replaces the legacy
+Rician bias stage while retaining the selected denoising behavior.
+
+A shared MP-PCA magnitude-noise profile approximates dispersion across
+measurements, although true magnitude variance can be signal dependent at low
+SNR. Denoising/shrinkage also provides an estimated mean, not a guaranteed exact
+moment. Correlated coils and reconstruction add model uncertainty. Record these
+assumptions and investigate sensitivity; lack of external Gaussian calibration
+does not block magnitude-moment software validation or a bounded pilot. Do not
+claim exact bias removal, scanner calibration or improved biological accuracy
+from successful inversion or reduced scalar extremes. See `docs/sos_noise.md`.

@@ -45,3 +45,34 @@ All original and amended RPG source is included in source and wheel distribution
 Please cite these methods and DESIGNER when using these preprocessing options,
 as well as pyDKE. Their licenses are component-specific and are not replaced by
 pyDKE's project license.
+
+## Optional SoS/noncentral-chi magnitude-bias model
+
+The separate magnitude-noise-bias stage credits Cheng Guan Koay and Peter J.
+Basser for the generalized magnitude-moment inversion framework, including the
+multiple-receiver case; Jelle Veraart, Els Fieremans and Dmitry S. Novikov for
+MP-PCA noise mapping and the distinction between magnitude dispersion and
+underlying Gaussian noise; and Santiago Aja-Fernández and Antonio Tristán-Vega
+for effective noise models with correlated receiver coils. André and colleagues
+provide related first-/second-moment noise-correction analysis in DKI.
+
+- Koay & Basser (2006), doi:10.1016/j.jmr.2006.01.016.
+- André et al. (2014), doi:10.1371/journal.pone.0094531.
+- Veraart, Fieremans & Novikov (2016), doi:10.1002/mrm.26059.
+- Aja-Fernández & Tristán-Vega (2012), doi:10.1002/mrm.23020.
+
+The new numerical implementation is local pyDKE code and does not replace or
+modify the credited original/adaptive MP-PCA algorithms. Its primary magnitude
+mode applies generalized Koay mean/variance inversion to the denoised magnitude
+mean and MP-PCA magnitude-noise profile. It infers an effective Gaussian
+component standard deviation under that model; an independent Gaussian
+calibration file is not required. An optional supplied-Gaussian convention
+retains first-moment inversion when component sigma is explicitly available.
+
+Both conventions require an explicitly supplied effective coil parameter
+(scalar or spatial map, supported numerical range 1 to 4096, fractions allowed).
+The parameter is not inferred from physical receiver count. This is an optional
+alternative to the separate legacy Rician bias stage, not a change to denoising.
+The citations acknowledge the scientific framework and do not imply that the
+original authors validated this implementation or a particular acquisition.
+See `docs/sos_noise.md` for model assumptions, provenance and diagnostics.
