@@ -199,7 +199,7 @@ def main(argv=None):
             name = bundle.stem
             execute('recognize_' + name, ['dipy_recobundles', slr / 'moved.trk', bundle.resolve(),
                     '--mix_names', '--out_dir', rec, '--out_recognized_transf', 'recognized.trk'])
-            labels = list(rec.glob('*' + name + '*labels*.npy'))
+            labels = [p for p in rec.glob('*' + name + '*labels*.npy') if not p.name.startswith('._')]
             if len(labels) != 1:
                 raise RuntimeError(f'Expected exactly one label file for {name}, got {labels}')
             label_data = np.load(labels[0])
@@ -209,8 +209,8 @@ def main(argv=None):
                 continue
             execute('native_' + name, ['dipy_labelsbundles', out / 'native.trk', labels[0],
                     '--mix_names', '--out_dir', org, '--out_bundle', 'recognized_orig.trk'])
-            recognized = list(rec.glob('*' + name + '*recognized*.trk'))
-            original = list(org.glob('*' + name + '*recognized*.trk'))
+            recognized = [p for p in rec.glob('*' + name + '*recognized*.trk') if not p.name.startswith('._')]
+            original = [p for p in org.glob('*' + name + '*recognized*.trk') if not p.name.startswith('._')]
             if len(recognized) != 1 or len(original) != 1:
                 raise RuntimeError(f'Could not uniquely pair native and recognized bundle: {name}')
             from dipy.io.streamline import load_tractogram
