@@ -116,3 +116,16 @@ def test_profile_uses_point_assignments_and_masks_unsupported(tmp_path):
     for row in rows:
         if int(row['n_valid']):
             assert float(row['mean']) < 6
+
+
+def test_optional_tracking_mask_is_intersected_on_matching_grid(tmp_path):
+    from pydesigner.buan.pipeline import tracking_mask_for_grid
+    base = np.ones((3, 3, 3), bool)
+    base[0] = False
+    data = np.zeros((3, 3, 3), np.uint8); data[:, 1, :] = 1
+    mask = tmp_path / 'tracking.nii'
+    nib.save(nib.Nifti1Image(data, np.eye(4)), mask)
+    actual = tracking_mask_for_grid(base, mask, np.eye(4))
+    assert np.array_equal(actual, base & (data > 0))
+    with pytest.raises(ValueError, match='grid'):
+        tracking_mask_for_grid(base, mask, np.diag([2, 1, 1, 1]))

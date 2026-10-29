@@ -52,6 +52,23 @@ def inspect(odf, mask, reference, metrics, exclude_extremes=False):
             'c00_percentiles': np.percentile(data[..., 0][selected], [0, 5, 50, 95, 100]).tolist()}
 
 
+def tracking_mask_for_grid(base_mask, optional_mask, affine):
+    """Intersect optional native-space stopping/seed mask with QC mask."""
+    base = np.asarray(base_mask, dtype=bool)
+    if optional_mask is None:
+        return base
+    image = nib.load(str(optional_mask))
+    if image.shape != base.shape or not np.allclose(image.affine, affine, atol=1e-4, rtol=0):
+        raise ValueError('Tracking mask grid does not match ODF grid')
+    array = np.asarray(image.dataobj)
+    if not np.isfinite(array).all():
+        raise ValueError('Tracking mask must be finite')
+    result = base & (array > 0)
+    if not np.any(result):
+        raise ValueError('Tracking and QC masks do not overlap')
+    return result
+
+
 def run_command(cmd, log, env):
     with open(log, 'w') as out:
         out.write('$ ' + ' '.join(map(str, cmd)) + '\n')
@@ -74,14 +91,28 @@ def main(argv=None):
     p.add_argument('--cutoff', type=float, required=True, help='experimental ODF-amplitude tracking cutoff')
     p.add_argument('--count', type=int, default=250000)
     p.add_argument('--threads', type=int, default=4)
+    p.add_argument('--tracking-mask', type=Path, help='Optional seed/stopping mask intersected with native QC mask')
+    p.add_argument('--algorithm', choices=['iFOD2', 'SD_STREAM'], default='iFOD2')
+    p.add_argument('--tracking-power', type=float, help='Optional iFOD2 directional sampling power')
+    p.add_argument('--seed-limit', type=int, default=2500000, help='Maximum attempted seeds')
+    p.add_argument('--rng-seed', type=int, help='Optional MRtrix RNG seed; multithreaded runs may still differ')
+    p.add_argument('--step-mm', type=float, help='Tracking step length in millimeters')
+    p.add_argument('--angle-deg', type=float, help='Maximum angle in degrees')
+    p.add_argument('--slr-x0', choices=['rigid', 'similarity', 'affine'], default='affine')
+    p.add_argument('--slr-min-cluster', type=int, default=50)
     p.add_argument('--basis', choices=['pydke-tournier'], required=True,
                    help='explicitly confirm provenance; no basis conversion is performed')
     p.add_argument('--coordinate-provenance-verified', action='store_true', help='Attest that export version and physical orientation have been independently validated')
     p.add_argument('--preflight-only', action='store_true')
     a = p.parse_args(argv)
-    if a.cutoff <= 0 or a.count <= 0 or a.threads <= 0:
+    if a.cutoff <= 0 or a.count <= 0 or a.threads <= 0 or a.seed_limit <= 0 or a.slr_min_cluster < 1:
         p.error('cutoff, count and threads must be positive')
+    if (a.step_mm is not None and a.step_mm <= 0) or (a.angle_deg is not None and not 0 < a.angle_deg <= 180):
+        p.error('step-mm and angle-deg must be valid positive values')
+    if a.tracking_power is not None and (a.algorithm != 'iFOD2' or a.tracking_power <= 0):
+        p.error('tracking-power requires iFOD2 and must be positive')
     paths = [a.odf, a.mask, a.reference, a.bvec, a.gradient_mif, *a.metric, a.atlas_wholebrain, *a.atlas_bundle]
+    if a.tracking_mask: paths.append(a.tracking_mask)
     for path in paths:
         if not path.is_file():
             p.error(f'Input not found: {path}')
@@ -93,6 +124,9 @@ def main(argv=None):
     info = {'state': 'preflight_passed', 'basis_assertion': a.basis,
             'inputs': {str(x.resolve()): sha256(x) for x in paths}, 'inspection': checks,
             'cutoff': a.cutoff, 'count': a.count, 'threads': a.threads,
+            'algorithm': a.algorithm, 'tracking_power': a.tracking_power,
+            'seed_limit': a.seed_limit, 'rng_seed': a.rng_seed, 'step_mm': a.step_mm, 'angle_deg': a.angle_deg,
+            'slr_x0': a.slr_x0, 'slr_min_cluster': a.slr_min_cluster,
             'warning': 'Exploratory DKI diffusion ODF, not a CSD fiber ODF; scientific QC required.'}
     def save():
         manifest.write_text(json.dumps(info, indent=2) + '\n')
@@ -113,6 +147,8 @@ def main(argv=None):
     extreme = np.max(np.abs(raw), axis=-1) > 1000
     native_mask = nib.load(str(a.mask))
     cleaned_mask = (np.asarray(native_mask.dataobj) > 0) & ~extreme
+    cleaned_mask = tracking_mask_for_grid(cleaned_mask, a.tracking_mask, native_mask.affine)
+    info['tracking_mask_voxels'] = int(cleaned_mask.sum())
     if not np.any(cleaned_mask):
         raise ValueError('QC exclusions removed the entire mask')
     clean_mask_path = a.out / 'tracking_mask.nii.gz'
@@ -123,6 +159,8 @@ def main(argv=None):
     nib.save(nib.Nifti1Image(converted.astype(np.float32), source.affine, source.header), str(corrected))
     info['converted_sh'] = str(corrected.resolve()); info['converted_sha256'] = sha256(corrected); save()
     env = os.environ.copy()
+    if a.rng_seed is not None:
+        env['MRTRIX_RNG_SEED'] = str(a.rng_seed)
     env.update({'MPLBACKEND': 'Agg', 'MPLCONFIGDIR': str((a.out / 'mpl').resolve()),
                 'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': str(a.threads)})
     out = a.out.resolve()
@@ -135,15 +173,21 @@ def main(argv=None):
             if not shutil.which(executable):
                 raise RuntimeError(f'Missing executable: {executable}')
         native = out / 'native.tck'
-        execute('tracking', ['tckgen', corrected.resolve(), native, '-algorithm', 'iFOD2',
-                 '-seed_image', clean_mask_path.resolve(), '-mask', clean_mask_path.resolve(), '-select', str(a.count),
-                 '-minlength', '20', '-maxlength', '250', '-cutoff', str(a.cutoff), '-nthreads', str(a.threads)])
+        command = ['tckgen', corrected.resolve(), native, '-algorithm', a.algorithm,
+                   '-seed_image', clean_mask_path.resolve(), '-mask', clean_mask_path.resolve(), '-select', str(a.count),
+                   '-seeds', str(a.seed_limit), '-minlength', '20', '-maxlength', '250',
+                   '-cutoff', str(a.cutoff), '-nthreads', str(a.threads)]
+        if a.tracking_power is not None: command.extend(['-power', str(a.tracking_power)])
+        if a.step_mm is not None: command.extend(['-step', str(a.step_mm)])
+        if a.angle_deg is not None: command.extend(['-angle', str(a.angle_deg)])
+        execute('tracking', command)
         execute('convert', ['dipy_convert_tractogram', native, '--reference', a.reference.resolve(),
                  '--out_dir', out, '--out_tractogram', 'native.trk'])
         slr = out / 'slr'
         slr.mkdir()
         execute('slr', ['dipy_slr', a.atlas_wholebrain.resolve(), out / 'native.trk',
-                 '--num_threads', str(a.threads), '--out_dir', slr, '--out_moved', 'moved.trk'])
+                 '--num_threads', str(a.threads), '--x0', a.slr_x0, '--rm_small_clusters', str(a.slr_min_cluster),
+                 '--out_dir', slr, '--out_moved', 'moved.trk'])
         if not (slr / 'moved.trk').is_file():
             raise RuntimeError('SLR produced no moved tractogram; inspect slr.log')
         rec = out / 'rec_bundles'
