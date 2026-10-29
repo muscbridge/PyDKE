@@ -52,6 +52,15 @@ def inspect(odf, mask, reference, metrics, exclude_extremes=False):
             'c00_percentiles': np.percentile(data[..., 0][selected], [0, 5, 50, 95, 100]).tolist()}
 
 
+def validate_sampled_evidence(audit_path, odf, bvec, gradient_mif):
+    evidence = json.loads(Path(audit_path).read_text())
+    if evidence.get('odf_sha256') != sha256(odf) or evidence.get('bvec_sha256') != sha256(bvec) or evidence.get('gradient_mif_sha256') != sha256(gradient_mif):
+        raise ValueError('Sampled audit inputs do not match current inputs')
+    if evidence.get('status') != 'PASS':
+        raise ValueError('Sampled audit did not pass')
+    return evidence
+
+
 def tracking_mask_for_grid(base_mask, optional_mask, affine):
     """Intersect optional native-space stopping/seed mask with QC mask."""
     base = np.asarray(base_mask, dtype=bool)
@@ -101,8 +110,9 @@ def main(argv=None):
     p.add_argument('--slr-x0', choices=['rigid', 'similarity', 'affine'], default='affine')
     p.add_argument('--slr-min-cluster', type=int, default=50)
     p.add_argument('--basis', choices=['pydke-tournier'], required=True,
-                   help='explicitly confirm provenance; no basis conversion is performed')
+                   help='explicitly identify pyDKE source basis; coefficients are converted for MRtrix')
     p.add_argument('--coordinate-provenance-verified', action='store_true', help='Attest that export version and physical orientation have been independently validated')
+    p.add_argument('--experimental-sampled-check', type=Path, help='Subject-specific sampled tensor/export and frame audit; does not establish original software provenance')
     p.add_argument('--preflight-only', action='store_true')
     a = p.parse_args(argv)
     if a.cutoff <= 0 or a.count <= 0 or a.threads <= 0 or a.seed_limit <= 0 or a.slr_min_cluster < 1:
@@ -113,6 +123,7 @@ def main(argv=None):
         p.error('tracking-power requires iFOD2 and must be positive')
     paths = [a.odf, a.mask, a.reference, a.bvec, a.gradient_mif, *a.metric, a.atlas_wholebrain, *a.atlas_bundle]
     if a.tracking_mask: paths.append(a.tracking_mask)
+    if a.experimental_sampled_check: paths.append(a.experimental_sampled_check)
     for path in paths:
         if not path.is_file():
             p.error(f'Input not found: {path}')
@@ -133,7 +144,11 @@ def main(argv=None):
     save()
     if a.preflight_only:
         return 0
-    if not a.coordinate_provenance_verified:
+    if a.experimental_sampled_check:
+        evidence = validate_sampled_evidence(a.experimental_sampled_check, a.odf, a.bvec, a.gradient_mif)
+        info['provenance'] = 'Original version unknown; sampled export and frame checks only, not whole-brain validation.'
+        info['sampled_orientation_check'] = evidence; save()
+    elif not a.coordinate_provenance_verified:
         info['state'] = 'blocked_coordinate_validation'; save()
         raise RuntimeError('Validate pyDKE export version and physical orientation before tracking; see documentation')
     from io import StringIO

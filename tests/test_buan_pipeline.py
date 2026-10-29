@@ -129,3 +129,18 @@ def test_optional_tracking_mask_is_intersected_on_matching_grid(tmp_path):
     assert np.array_equal(actual, base & (data > 0))
     with pytest.raises(ValueError, match='grid'):
         tracking_mask_for_grid(base, mask, np.diag([2, 1, 1, 1]))
+
+
+def test_sampled_evidence_is_bound_to_input_hashes(tmp_path):
+    import json
+    from pydesigner.buan.pipeline import sha256, validate_sampled_evidence
+    files = [tmp_path / n for n in ('odf', 'bvec', 'gradient')]
+    for i, path in enumerate(files):
+        path.write_text(f'input-{i}')
+    record = {'status': 'PASS', 'odf_sha256': sha256(files[0]),
+              'bvec_sha256': sha256(files[1]), 'gradient_mif_sha256': sha256(files[2])}
+    audit = tmp_path / 'audit.json'; audit.write_text(json.dumps(record))
+    assert validate_sampled_evidence(audit, *files)['status'] == 'PASS'
+    files[0].write_text('changed')
+    with pytest.raises(ValueError, match='do not match'):
+        validate_sampled_evidence(audit, *files)
